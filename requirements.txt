@@ -1,2 +1,5 @@
 PyQt5==5.15.11
 python-vlc==3.0.21203
+opencv-python==4.11.0.86
+aiohttp==3.11.16
+aiortc==1.11.0

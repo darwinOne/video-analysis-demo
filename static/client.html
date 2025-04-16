@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>WebRTC CCTV</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: sans-serif;
+      background: #111;
+      color: white;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    h2 { margin: 10px; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      grid-gap: 10px;
+      padding: 10px;
+      width: 100%;
+      max-width: 1200px;
+    }
+
+    video {
+      width: 100%;
+      height: auto;
+      background: black;
+      border: 2px solid #333;
+    }
+  </style>
+</head>
+<body>
+  <h2>4-Camera RTSP Viewer</h2>
+  <div class="grid">
+    <video id="video0" autoplay playsinline muted></video>
+    <video id="video1" autoplay playsinline muted></video>
+    <video id="video2" autoplay playsinline muted></video>
+    <video id="video3" autoplay playsinline muted></video>
+  </div>
+
+  <script>
+    async function start(camIndex) {
+      const pc = new RTCPeerConnection();
+      const videoElement = document.getElementById(`video${camIndex}`);
+
+      pc.ontrack = (event) => {
+        videoElement.srcObject = event.streams[0];
+      };
+
+      pc.addTransceiver("video", { direction: "recvonly" });
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      const res = await fetch(`/offer?cam=${camIndex}`, {
+        method: "POST",
+        body: JSON.stringify(pc.localDescription),
+        headers: { "Content-Type": "application/json" },
+      });
+
+      const answer = await res.json();
+      await pc.setRemoteDescription(answer);
+    }
+
+    // Start all 4 streams
+    for (let i = 0; i < 4; i++) {
+      start(i);
+    }
+  </script>
+</body>
+</html>
