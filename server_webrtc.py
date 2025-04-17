@@ -2,67 +2,80 @@ import asyncio
 import cv2
 import os
 from aiohttp import web
-from aiortc import RTCPeerConnection, RTCSessionDescription, VideoStreamTrack
+from aiortc import RTCPeerConnection, RTCSessionDescription, VideoStreamTrack, RTCConfiguration, RTCIceServer
 from aiortc.contrib.media import MediaRelay
+import av
 from av import VideoFrame
+from av import open as av_open
 import time
 
 # CAMERA_SOURCES = {
-#     0 : "rtsp://admin:aery2021!@192.168.45.167:554/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif",
-#     1 : "rtsp://admin:aery2021!@192.168.45.165:554/stream1",
+#      0 : "rtsp://admin:aery2021!@192.168.45.167:554/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif",
+#      1 : "rtsp://admin:aery2021!@192.168.45.165:554/stream1",
 #     2 : "rtsp://admin:aery2021!@192.168.45.168:554/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif",
 #     3 : "rtsp://admin:aery2021!@192.168.45.169:554/stream1"
-# }
+#  }
 
 CAMERA_SOURCES = {
     0: "videos/test.mp4",
-    1: "videos/test1.mp4",
-    2: "videos/test2.mp4",
-    3: "videos/test.mp4",
+    1: "videos/test2.mp4",
+    # 2: "videos/test1.mp4",
+    # 3: "videos/test2.mp4",
 }
 
 relay = MediaRelay()
 pcs = set()
 
+camera_tracks = {}
+
 class CameraStreamTrack(VideoStreamTrack):
     def __init__(self, source_path):
         super().__init__()
-        self.cap = cv2.VideoCapture(source_path)
-        if not self.cap.isOpened():
-            raise RuntimeError(f"Failed to open camera: {source_path}")
-        
-        # Untuk keperluan hitung lantency dan delay
-        # self.source_path = source_path
+        self.source_path = source_path
+        try:
+            self.container = av.open(source_path, options={
+                "rtsp_transport": "tcp",       # Force TCP for reliability
+                "buffer_size": "1048576"       # 1MB buffer
+            })
+        except av.AVError as e:
+            raise RuntimeError(f"Failed to open camera stream: {e}")
+
+        self.stream = self.container.streams.video[0]
+        self.stream.thread_type = "AUTO"      # Enable multi-thread decoding
+
+        self.start_time = time.time()
 
     async def recv(self):
         pts, time_base = await self.next_timestamp()
 
-        ret, frame = self.cap.read()
-        if not ret:
-            self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            ret, frame = self.cap.read()
+        # Read next frame with retry loop
+        frame = None
+        for packet in self.container.demux(self.stream):
+            for f in packet.decode():
+                frame = f
+                break
+            if frame:
+                break
 
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        
-        # Hitung delay
-        # capture_time = time.time()
-        video_frame = VideoFrame.from_ndarray(frame, format="rgb24")
-        video_frame.pts = pts
-        video_frame.time_base = time_base
+        if frame is None:
+            print(f"[WARN] Stream stuck or ended, rewinding: {self.source_path}")
+            self.container.seek(0)
+            return await self.recv()
 
-        # Attach timestamp to video frame
-        # video_frame.metadata["capture_time"] = capture_time
+        # Optional: convert pixel format to avoid FFmpeg warnings
+        frame = frame.to_rgb()
 
-        # Log delay (when delivered by aiortc)
-        # self._log_latency(video_frame)
+        # Set timing
+        frame.pts = pts
+        frame.time_base = time_base
 
-        return video_frame
-    
-    # def _log_latency(self, video_frame):
-    #     now = time.time()
-    #     capture_time = video_frame.metadata.get("capture_time", now)
-    #     latency_ms = (now - capture_time) * 1000
-    #     print(f"[{self.source_path}] Latency: {latency_ms:.2f} ms")
+        # Log latency
+        now = time.time()
+        latency = (now - self.start_time) * 1000
+        print(f"[INFO] Frame latency: {latency:.2f} ms")
+        self.start_time = now
+
+        return frame
 
 async def index(request):
     return web.FileResponse("static/client.html")
@@ -75,15 +88,20 @@ async def offer(request):
     if not source_path:
         return web.Response(status=404, text="Camera source not found")
 
-    offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
-    pc = RTCPeerConnection()
+    stun_config = RTCConfiguration([
+        RTCIceServer(urls=["stun:stun.l.google.com:19302"])
+    ])
+
+    pc = RTCPeerConnection(configuration=stun_config)
     pcs.add(pc)
 
-    print(f"Opening camera {cam_index}: {source_path}")
-    video_track = CameraStreamTrack(source_path)
-    pc.addTrack(relay.subscribe(video_track))
+    if cam_index not in camera_tracks:
+        print(f"Opening persistent camera {cam_index}: {source_path}")
+        camera_tracks[cam_index] = CameraStreamTrack(source_path)
 
-    await pc.setRemoteDescription(offer)
+    pc.addTrack(relay.subscribe(camera_tracks[cam_index]))
+
+    await pc.setRemoteDescription(RTCSessionDescription(sdp=params["sdp"], type=params["type"]))
     answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
 
@@ -94,9 +112,15 @@ async def offer(request):
 
 async def on_shutdown(app):
     print("Shutting down...")
-    coros = [pc.close() for pc in pcs]
-    await asyncio.gather(*coros)
+    for pc in pcs:
+        await pc.close()
     pcs.clear()
+   
+    for track in camera_tracks.values():
+        if track.container:
+            track.container.close()
+    camera_tracks.clear()
+
 
 app = web.Application()
 app.on_shutdown.append(on_shutdown)
