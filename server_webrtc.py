@@ -63,7 +63,11 @@ class CameraStreamTrack(VideoStreamTrack):
 
         if frame is None:
             print(f"[WARN] Stream stuck or ended, rewinding: {self.source_path}")
-            self.container.seek(0)
+            # self.container.seek(0)
+            try:
+                self.container.seek(0, any_frame=False, backward=True)
+            except av.AVError as e:
+                print(f"[ERROR] Seek failed: {e}")
             return await self.recv()
 
         # Optional: convert pixel format to avoid FFmpeg warnings
@@ -125,8 +129,11 @@ async def on_shutdown(app):
     pcs.clear()
    
     for track in camera_tracks.values():
-        if track.container:
-            track.container.close()
+        try:
+            if track.container and track.container.closed is False:
+                track.container.close()
+        except Exception as e:
+            print(f"[WARN] Failed to close container: {e}")
     camera_tracks.clear()
 
 
