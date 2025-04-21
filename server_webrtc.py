@@ -38,8 +38,8 @@ class CameraStreamTrack(VideoStreamTrack):
                 "buffer_size": "1048576",   # 1MB buffer
                 "fflags": "nobuffer",
                 "flags": "low_delay",
-                "stimeout": "5000000",      # 5 seconds timeout in µs
-                "max_delay": "500000",      # 0.5 seconds max delay in µs
+                # "stimeout": "5000000",      # 5 seconds timeout in µs
+                # "max_delay": "500000",      # 0.5 seconds max delay in µs
             })
         except av.AVError as e:
             raise RuntimeError(f"Failed to open camera stream: {e}")
@@ -74,8 +74,8 @@ class CameraStreamTrack(VideoStreamTrack):
         # frame = frame.to_rgb()
 
         # Convert only if needed: minimize processing
-        # if frame.format.name != "yuv420p":
-        #     frame = frame.reformat(format="yuv420p")  # For efficient WebRTC encoding
+        if frame.format.name != "yuv420p":
+            frame = frame.reformat(format="yuv420p")  # For efficient WebRTC encoding
 
         # Set timing
         frame.pts = pts
